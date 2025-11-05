@@ -1,137 +1,63 @@
-import http from 'node:http'
-import pug from 'pug'
-import url from 'node:url'
-import fs from 'node:fs/promises'
-import qs from 'node:querystring'
+import createError from 'http-errors'
+import express, {NextFunction, Request, Response} from 'express'
+import path from 'node:path'
+// @ts-ignore
+import cookieParser from 'cookie-parser'
+// @ts-ignore
+import logger from 'morgan'
+// @ts-ignore
+import session from 'express-session'
 
-const index_template = pug.compileFile('./index.pug')
-const other_template = pug.compileFile('./other.pug')
-const style_css = await fs.readFile('./style.css', 'utf8')
+import indexRouter from './routes/index.js'
+// @ts-ignore
+import usersRouter from './routes/users.js'
+import helloRouter from './routes/hello.js'
 
-const server = http.createServer(getFromClient)
+const app = express()
 
-server.listen(3210)
-console.log('Server start!')
+// view engine setup
+app.set('views', path.join(import.meta.dirname, 'views'))
+app.set('view engine', 'pug')
 
-const data = {
-    msg: 'no message...'
-}
-
-// ここまでメインプログラム==========
-
-// createServer の処理
-async function getFromClient(req: http.IncomingMessage, res: http.ServerResponse) {
-    const url_parts = new url.URL(req.url || '', 'http://localhost:3210')
-
-    switch (url_parts.pathname) {
-        case '/': {
-            await response_index(req, res)
-            break
-        }
-        case '/other': {
-            await response_other(req, res)
-            break
-        }
-
-        default:
-            // 想定していないパスへのアクセスが来たときの処理
-            res.writeHead(404, {'Content-Type': 'text/plain'})
-            res.end('no page...')
-            break
+app.use(logger('dev'))
+app.use(express.json())
+app.use(express.urlencoded({extended: false}))
+app.use(cookieParser())
+app.use(express.static(path.join(import.meta.dirname, 'public')))
+app.use(session({
+    secret: 'oijqepr[oijnafg9p-uhiaedrfgoiuphq354rpiubn',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        maxAge: 60 * 60 * 1000
     }
+}))
+
+app.use('/', indexRouter)
+app.use('/users', usersRouter)
+app.use('/hello', helloRouter)
+
+// catch 404 and forward to error handler
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+    next(createError(404))
+})
+
+// error handler
+app.use(async (err: unknown, req: Request, res: Response, next: NextFunction) => {
+    // set locals, only providing error in development
+    res.locals.message = hasProperty(err, 'message') && err.message || 'Unknown error'
+    res.locals.error = req.app.get('env') === 'development' ? err : {}
+
+    // render the error page
+    res.status(hasProperty(err, 'status') && Number(err.status) || 500)
+    res.render('error')
+})
+
+// unknown 型のデータが、指定のプロパティを持っているかチェックするための関数
+function hasProperty<K extends string>(x: unknown, ...name: K[]): x is { [M in K]: unknown } {
+    return (
+        x instanceof Object && name.every(prop => prop in x)
+    )
 }
 
-async function response_index(req: http.IncomingMessage, res: http.ServerResponse) {
-    if (req.method === 'POST') {
-        // POSTアクセス時の処理
-        const post_data = await parse_body(req)
-        data.msg = post_data.msg as string
-
-        setCookie('msg', data.msg, res)
-
-        // リダイレクトする
-        res.writeHead(302, 'Found', {
-            'Location': '/',
-        })
-        res.end()
-    } else {
-        write_index(req, res)
-    }
-}
-
-async function response_other(req: http.IncomingMessage, res: http.ServerResponse) {
-    let msg = 'これはOtherページです。'
-
-    if (req.method === 'POST') {
-        const post_data = await (new Promise<qs.ParsedUrlQuery>((resolve, reject) => {
-            let body = ''
-            req.on('data', (chunk) => {
-                body += chunk
-            })
-            req.on('end', () => {
-                try {
-                    resolve(qs.parse(body))
-                } catch (e) {
-                    console.error(e)
-                    reject(e)
-                }
-            })
-        }))
-        msg += `あなたは「${post_data.msg}」とかきました`
-        const content = other_template({
-            title: 'Other',
-            content: msg,
-        })
-        res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
-        res.write(content)
-        res.end()
-    } else {
-        // POST 以外のアクセス
-        const content = other_template({
-            title: 'Other',
-            content: 'ページがありません'
-        })
-        res.writeHead(404, {'Content-Type': 'text/html; charset=utf-8'})
-        res.write(content)
-        res.end()
-    }
-}
-
-function parse_body(req: http.IncomingMessage): Promise<qs.ParsedUrlQuery> {
-    return new Promise((resolve, reject) => {
-        let body = ''
-        req.on('data', (chunk) => {
-            body += chunk
-        })
-        req.on('end', () => {
-            resolve(qs.parse(body))
-        })
-    })
-}
-
-function write_index(req: http.IncomingMessage, res: http.ServerResponse) {
-    const cookie_data = getCookie(req)
-    const content = index_template({
-        title: 'Index',
-        content: '※伝言を表示します。',
-        data,
-        cookie_data
-    })
-    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
-    res.write(content)
-    res.end()
-}
-
-function setCookie(key: string, value: string, res: http.ServerResponse) {
-    const encoded_cookie = qs.stringify({[key]: value})
-    res.setHeader('Set-Cookie', [encoded_cookie])
-}
-
-function getCookie(req: http.IncomingMessage) {
-    const cookie_data = req.headers.cookie != undefined
-        ? req.headers.cookie : ''
-    const data = cookie_data.split(';')
-        .map(raw_cookie => qs.parse(raw_cookie.trim()))
-        .reduce((acc, cookie) => ({...acc, ...cookie}))
-    return data
-}
+export default app
